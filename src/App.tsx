@@ -110,8 +110,9 @@ const countriesBordersLayer = new GeoJsonLayer({
 });
 
 function App() {
-  const [path, setPath] = useState('./tmp/gp_encoding_convert');
-  const mode = path.trim().endsWith('.json') ? 'vector' : 'raster';
+  const [inputPath, setInputPath] = useState('./tmp/gp_encoding_convert');
+  const [activePath, setActivePath] = useState<string | null>(null);
+  const [mode, setMode] = useState<'vector' | 'raster' | null>(null);
   const [levels, setLevels] = useState<number[]>([]);
   const [level, setLevel] = useState<number | null>(null);
   const [cells, setCells] = useState<any[]>([]);
@@ -139,32 +140,52 @@ function App() {
     return sortedLevels[sortedLevels.length - 1];
   };
 
-  const fetchLevels = async () => {
+  const handleLoadFile = async () => {
+    if (!inputPath) return;
+    setIsLoading(true);
+    setError(null);
     try {
-      const storeLevels: number[] = await invoke('get_levels', { store: path });
-      const sortedLevels = [...storeLevels].sort((a, b) => a - b);
-      setLevels(sortedLevels);
-      setLevel((current) => {
-        if (current !== null && sortedLevels.includes(current)) {
-          return current;
+      const fileType = await invoke<string>('check_file_type', { path: inputPath });
+      
+      if (fileType === 'vector') {
+        setMode('vector');
+        setActivePath(inputPath);
+        
+        const data: any = await invoke('load_vector_geojson', { path: inputPath });
+        setVectorData(data);
+        if (data.layers) {
+          const layerNames = Object.keys(data.layers);
+          if (layerNames.length > 0) {
+            setSelectedLayer(layerNames[0]);
+          } else {
+            setSelectedLayer(null);
+          }
+        } else {
+          setSelectedLayer(null);
         }
-        return resolveDefaultLevel(sortedLevels);
-      });
-      return sortedLevels;
+      } else if (fileType === 'raster') {
+        setMode('raster');
+        setActivePath(inputPath);
+        
+        const storeLevels: number[] = await invoke('get_levels', { store: inputPath });
+        const sortedLevels = [...storeLevels].sort((a, b) => a - b);
+        setLevels(sortedLevels);
+        setLevel((current) => {
+          if (current !== null && sortedLevels.includes(current)) {
+            return current;
+          }
+          return resolveDefaultLevel(sortedLevels);
+        });
+      }
     } catch (err: any) {
       console.error(err);
       setError(err.toString());
-      setLevels([]);
-      setLevel(null);
-      return [];
+      setMode(null);
+      setActivePath(null);
+    } finally {
+      setIsLoading(false);
     }
   };
-
-  useEffect(() => {
-    if (mode === 'raster') {
-      fetchLevels();
-    }
-  }, [path, mode]);
 
   const resolveLevelForZoom = (zoom: number, availableLevels: number[]) => {
     if (availableLevels.length === 0) return null;
@@ -179,7 +200,7 @@ function App() {
   };
 
   const loadDataForCurrentView = async () => {
-    if (levels.length === 0) return;
+    if (levels.length === 0 || !activePath) return;
     setError(null);
     setIsLoading(true);
     try {
@@ -194,7 +215,7 @@ function App() {
       const bounds = viewport.getBounds();
 
       const payload = await invoke('get_data_binary', { 
-        store: path, 
+        store: activePath, 
         level: resolvedLevel,
         bbox: [bounds[0], bounds[1], bounds[2], bounds[3]]
       });
@@ -211,7 +232,7 @@ function App() {
   };
 
   useEffect(() => {
-    if (mode === 'raster' && path && levels.length > 0) {
+    if (mode === 'raster' && activePath && levels.length > 0) {
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
       }
@@ -219,34 +240,9 @@ function App() {
         loadDataForCurrentView();
       }, 500);
     }
-  }, [viewState, levels, path, mode]);
+  }, [viewState, levels, activePath, mode]);
 
-  const loadVectorData = async () => {
-    if (!path) return;
-    setError(null);
-    setIsLoading(true);
-    try {
-      const data: any = await invoke('load_vector_geojson', { path });
-      setVectorData(data);
-      if (data.layers) {
-        const layerNames = Object.keys(data.layers);
-        if (layerNames.length > 0) {
-          setSelectedLayer(layerNames[0]);
-        } else {
-          setSelectedLayer(null);
-        }
-      } else {
-        setSelectedLayer(null);
-      }
-    } catch (err: any) {
-      console.error(err);
-      setError(err.toString());
-      setVectorData(null);
-      setSelectedLayer(null);
-    } finally {
-      setIsLoading(false);
-    }
-  };
+
 
   const layers = useMemo(() => {
     const layerList: any[] = [countriesBordersLayer, earthMaskLayer];
@@ -327,13 +323,19 @@ function App() {
               <label>Data Path</label>
               <input
                 type="text"
-                value={path}
-                onChange={e => setPath(e.target.value)}
+                value={inputPath}
+                onChange={e => setInputPath(e.target.value)}
                 placeholder="/path/to/zarr or /path/to/vector.json"
               />
             </div>
+            
+            <div className="panel-actions">
+              <button onClick={handleLoadFile} disabled={isLoading || !inputPath}>
+                {isLoading ? 'Loading...' : 'Load File'}
+              </button>
+            </div>
 
-            {mode === 'raster' ? (
+            {mode === 'raster' && (
               <>
                 <div className="input-group">
                   <label>Active Level</label>
@@ -349,7 +351,9 @@ function App() {
                   </button>
                 </div>
               </>
-            ) : (
+            )}
+            
+            {mode === 'vector' && (
               <>
                 {vectorData && (
                   <>
@@ -386,11 +390,6 @@ function App() {
                     </select>
                   </div>
                 )}
-                <div className="panel-actions">
-                  <button onClick={loadVectorData} disabled={isLoading || !path}>
-                    {isLoading ? 'Loading...' : 'Load Vector File'}
-                  </button>
-                </div>
               </>
             )}
 

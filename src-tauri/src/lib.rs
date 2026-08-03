@@ -35,13 +35,44 @@ async fn get_data_binary(store: String, level: u32, bbox: Option<Vec<f64>>) -> R
     .await
     .map_err(|e| e.to_string())?
 }
-
 #[tauri::command]
 async fn get_levels(store: String) -> Result<Vec<u32>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use gp_encoding::{ZarrBackend, StorageBackend};
         let backend = ZarrBackend::open(std::path::Path::new(&store)).map_err(|e| e.to_string())?;
         Ok(backend.levels())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn load_vector_geojson(path: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn check_file_type(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use gp_encoding::{ZarrBackend, StorageBackend};
+        if ZarrBackend::open(std::path::Path::new(&path)).is_ok() {
+            return Ok("raster".to_string());
+        }
+
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if json.get("dggrs").is_some() || json.get("layers").is_some() || json.get("geojson").is_some() {
+                    return Ok("vector".to_string());
+                }
+            }
+        }
+
+        Err("Invalid file type: neither a DGGS raster nor a valid DGGS vector file".to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -54,7 +85,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_data,
             get_data_binary,
-            get_levels
+            get_levels,
+            load_vector_geojson,
+            check_file_type
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
