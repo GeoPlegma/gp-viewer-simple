@@ -109,6 +109,38 @@ const countriesBordersLayer = new GeoJsonLayer({
   pickable: false
 });
 
+function getVectorCenter(data: any): [number, number] | null {
+  if (!data) return null;
+  const features = data.features || (data.type === 'Feature' ? [data] : []);
+  if (!features || features.length === 0) return null;
+  let sumLon = 0;
+  let sumLat = 0;
+  let count = 0;
+
+  function traverseCoords(coords: any) {
+    if (Array.isArray(coords)) {
+      if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+        sumLon += coords[0];
+        sumLat += coords[1];
+        count += 1;
+      } else {
+        coords.forEach(traverseCoords);
+      }
+    }
+  }
+
+  for (const f of features) {
+    if (f && f.geometry && f.geometry.coordinates) {
+      traverseCoords(f.geometry.coordinates);
+    }
+  }
+
+  if (count > 0) {
+    return [sumLon / count, sumLat / count];
+  }
+  return null;
+}
+
 function App() {
   const [inputPath, setInputPath] = useState('./tmp/gp_encoding_convert');
   const [activePath, setActivePath] = useState<string | null>(null);
@@ -153,15 +185,27 @@ function App() {
         
         const data: any = await invoke('load_vector_geojson', { path: inputPath });
         setVectorData(data);
+        let targetGeojson = data;
         if (data.layers) {
           const layerNames = Object.keys(data.layers);
           if (layerNames.length > 0) {
             setSelectedLayer(layerNames[0]);
+            targetGeojson = data.layers[layerNames[0]];
           } else {
             setSelectedLayer(null);
           }
         } else {
           setSelectedLayer(null);
+        }
+
+        const center = getVectorCenter(targetGeojson);
+        if (center) {
+          setViewState(prev => ({
+            ...prev,
+            longitude: center[0],
+            latitude: center[1],
+            zoom: Math.max(prev.zoom, 5)
+          }));
         }
       } else if (fileType === 'raster') {
         setMode('raster');
@@ -272,6 +316,8 @@ function App() {
         geojsonToRender = vectorData.geojson;
       } else if (vectorData.layers && selectedLayer && vectorData.layers[selectedLayer]) {
         geojsonToRender = vectorData.layers[selectedLayer];
+      } else if (vectorData.type === 'FeatureCollection' || vectorData.type === 'Feature' || vectorData.features) {
+        geojsonToRender = vectorData;
       }
 
       if (geojsonToRender) {
@@ -280,9 +326,9 @@ function App() {
           data: geojsonToRender,
           stroked: true,
           filled: true,
-          pointRadiusMinPixels: 4,
+          pointRadiusMinPixels: 6,
           lineWidthMinPixels: 2,
-          getFillColor: [34, 211, 238, 150],
+          getFillColor: [34, 211, 238, 160],
           getLineColor: [34, 211, 238, 255],
           getPointRadius: 100,
           getElevation: 0,
@@ -380,7 +426,20 @@ function App() {
                     <label>Selected Layer</label>
                     <select
                       value={selectedLayer || ''}
-                      onChange={e => setSelectedLayer(e.target.value)}
+                      onChange={e => {
+                        const nextLayer = e.target.value;
+                        setSelectedLayer(nextLayer);
+                        if (vectorData?.layers?.[nextLayer]) {
+                          const center = getVectorCenter(vectorData.layers[nextLayer]);
+                          if (center) {
+                            setViewState(prev => ({
+                              ...prev,
+                              longitude: center[0],
+                              latitude: center[1],
+                            }));
+                          }
+                        }
+                      }}
                     >
                       {Object.keys(vectorData.layers).map(name => (
                         <option key={name} value={name}>

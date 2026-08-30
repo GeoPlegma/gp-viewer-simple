@@ -50,7 +50,9 @@ async fn get_levels(store: String) -> Result<Vec<u32>, String> {
 async fn load_vector_geojson(path: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).map_err(|e| e.to_string())
+        let mut val: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        gp_encoding::decode_vector_json(&mut val).map_err(|e| e.to_string())?;
+        Ok(val)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -66,7 +68,12 @@ async fn check_file_type(path: String) -> Result<String, String> {
 
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                if json.get("dggrs").is_some() || json.get("layers").is_some() || json.get("geojson").is_some() {
+                if json.get("dggrs").is_some()
+                    || json.get("layers").is_some()
+                    || json.get("geojson").is_some()
+                    || json.get("type").is_some()
+                    || json.get("features").is_some()
+                {
                     return Ok("vector".to_string());
                 }
             }
