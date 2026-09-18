@@ -26,7 +26,19 @@ async fn get_data(
 async fn get_data_binary(store: String, level: u32, bbox: Option<Vec<f64>>) -> Result<tauri::ipc::Response, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use gp_encoding::{StorageBackend, ZarrBackend, BoundingBox};
-        let bbox = bbox.map(|b| BoundingBox::new(b[0], b[1], b[2], b[3]));
+        let bbox = bbox
+            .map(|b| {
+                if b.len() != 4 || !b.iter().all(|value| value.is_finite()) {
+                    return Err("bbox must contain four finite numbers".to_string());
+                }
+                if b[0] < -180.0 || b[2] > 180.0 || b[1] < -90.0 || b[3] > 90.0
+                    || b[0] > b[2] || b[1] > b[3]
+                {
+                    return Err(format!("invalid bbox [{}, {}, {}, {}]", b[0], b[1], b[2], b[3]));
+                }
+                Ok(BoundingBox::new(b[0], b[1], b[2], b[3]))
+            })
+            .transpose()?;
         let backend = ZarrBackend::open(std::path::Path::new(&store)).map_err(|e| e.to_string())?;
         gp_encoding::query::export_level_as_visualization_binary(&backend, level, bbox)
             .map(tauri::ipc::Response::new)

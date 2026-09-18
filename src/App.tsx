@@ -9,11 +9,12 @@
 
 import { useState, useMemo, useEffect, useRef } from 'react';
 import DeckGL from '@deck.gl/react';
-import { _GlobeView as GlobeView, WebMercatorViewport } from '@deck.gl/core';
+import { _GlobeView as GlobeView } from '@deck.gl/core';
 import { SolidPolygonLayer, GeoJsonLayer } from '@deck.gl/layers';
 
 import { invoke } from '@tauri-apps/api/core';
 import './App.css';
+import { getQueryBoundsForView, unwrapPolygon } from './globeBounds';
 
 const BAND_KEY_PREFIX = 'band_';
 
@@ -149,6 +150,7 @@ function App() {
   const [level, setLevel] = useState<number | null>(null);
   const [cells, setCells] = useState<any[]>([]);
   const timeoutRef = useRef<number | null>(null);
+  const requestIdRef = useRef(0);
   const [bandCount, setBandCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [viewState, setViewState] = useState({
@@ -245,6 +247,7 @@ function App() {
 
   const loadDataForCurrentView = async () => {
     if (levels.length === 0 || !activePath) return;
+    const requestId = ++requestIdRef.current;
     setError(null);
     setIsLoading(true);
     try {
@@ -255,35 +258,59 @@ function App() {
 
       const width = window.innerWidth;
       const height = window.innerHeight;
-      const viewport = new WebMercatorViewport({ ...viewState, width, height });
-      const bounds = viewport.getBounds();
-
-      const payload = await invoke('get_data_binary', { 
-        store: activePath, 
+      const visibleBounds = getQueryBoundsForView(viewState, width, height);
+      const queryBounds = resolvedLevel <= 2 ? visibleBounds.slice(0, 1) : visibleBounds;
+      const payloads = await Promise.all(queryBounds.map(bbox => invoke('get_data_binary', {
+        store: activePath,
         level: resolvedLevel,
-        bbox: [bounds[0], bounds[1], bounds[2], bounds[3]]
-      });
-      const { cells: decodedCells, bandCount: decodedBandCount } = decodeBinary(payload);
-      setCells(decodedCells);
+        bbox
+      })));
+
+      if (requestId !== requestIdRef.current) return;
+
+      const decoded = payloads.map(decodeBinary);
+      const decodedBandCount = decoded[0]?.bandCount ?? 0;
+      if (decoded.some(result => result.bandCount !== decodedBandCount)) {
+        throw new Error('Inconsistent band count between viewport queries');
+      }
+
+      const uniqueCells = new Map<string, any>();
+      for (const result of decoded) {
+        for (const cell of result.cells) {
+          uniqueCells.set(JSON.stringify(cell.polygon), cell);
+        }
+      }
+      setCells([...uniqueCells.values()]);
       setBandCount(decodedBandCount);
       setLevel(resolvedLevel);
     } catch (err: any) {
-      console.error(err);
-      setError(err.toString());
+      if (requestId === requestIdRef.current) {
+        console.error(err);
+        setError(err.toString());
+      }
     } finally {
-      setIsLoading(false);
+      if (requestId === requestIdRef.current) {
+        setIsLoading(false);
+      }
     }
   };
 
   useEffect(() => {
+    requestIdRef.current += 1;
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current);
+    }
     if (mode === 'raster' && activePath && levels.length > 0) {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
       timeoutRef.current = window.setTimeout(() => {
         loadDataForCurrentView();
       }, 500);
     }
+
+    return () => {
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
   }, [viewState, levels, activePath, mode]);
 
 
@@ -304,7 +331,7 @@ function App() {
         getFillColor: useElevation
           ? (d: any) => [d.band_0, d.band_0, d.band_0]
           : (d: any) => [d.band_0, d.band_1, d.band_2],
-        getPolygon: (d: any) => d.polygon,
+        getPolygon: (d: any) => unwrapPolygon(d.polygon, viewState.longitude),
         wireframe: false,
         pickable: true,
       });
@@ -339,7 +366,7 @@ function App() {
     }
 
     return layerList;
-  }, [cells, bandCount, mode, vectorData, selectedLayer]);
+  }, [cells, bandCount, mode, vectorData, selectedLayer, viewState.longitude]);
 
   return (
     <div className="app-root" onContextMenu={(e) => e.preventDefault()}>
